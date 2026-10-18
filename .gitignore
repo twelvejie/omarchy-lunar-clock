@@ -1,0 +1,6 @@
+# macOS noise, in case the repo is ever cloned there
+.DS_Store
+
+# Editor and OS clutter
+*.swp
+*~
