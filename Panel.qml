@@ -1,8 +1,10 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "Events.js" as Events
 import "Lunar.js" as Lunar
 
 // The clock's calendar popup: a month grid with ISO week numbers, built to
@@ -60,6 +62,31 @@ Panel {
   readonly property int lifeDonePercent: Model.lifeProgressPercent(age, lifeExpectancy)
   property bool editingLife: false
 
+  // ---- Todos and anniversaries. One JSON file under the user's data
+  //      directory holds both, and clicking a day opens that day's detail
+  //      block under the grid. Keys are "yyyy-MM-dd", the same identity the
+  //      grid already uses for today.
+  readonly property string xdgDataHome: Quickshell.env("XDG_DATA_HOME") !== ""
+    ? Quickshell.env("XDG_DATA_HOME")
+    : Quickshell.env("HOME") + "/.local/share"
+  readonly property string eventsDir: xdgDataHome + "/io.github.twelvejie.lunar-clock"
+  readonly property string eventsPath: eventsDir + "/events.json"
+
+  property var events: Events.emptyEvents()
+  property bool eventsLoaded: false
+  property string selectedKey: ""
+  property bool anniversaryYearly: true
+
+  readonly property var selectedDate: Events.dateFromKey(selectedKey)
+  readonly property var selectedEvents: Events.eventsForDate(events, selectedKey)
+  readonly property var selectedLunar: {
+    if (!selectedDate || !showLunar) return null
+    return Lunar.dayInfo(selectedDate.getFullYear(), selectedDate.getMonth() + 1, selectedDate.getDate())
+  }
+  // True while a text field in the day detail owns the keys, so the panel's
+  // shortcut handler steps aside the same way it does for the life fields.
+  readonly property bool entryEditing: todoField.activeFocus || annivField.activeFocus || annivYearField.activeFocus
+
   // Unset falls through to the locale's own first day, so a fresh install
   // starts out matching the rest of the desktop rather than a hardcoded
   // convention. Clicking the grid's "W" heading writes the choice back to
@@ -72,6 +99,7 @@ Panel {
   // Whether each day cell carries the lunar/festival/solar-term caption.
   // On by default; `l` flips it and persists the choice.
   readonly property bool showLunar: Lunar.boolValue(setting("showLunar", true), true)
+
 
 
   // Guarded so the widget renders before the bar is injected (the bar-widget
@@ -120,6 +148,7 @@ Panel {
     // Dismissing the panel mid-edit would otherwise leave the inputs up,
     // waiting behind a closed popup for the next time it opens.
     if (root.editingLife) root.cancelEditingLife()
+    if (root.selectedKey !== "") root.clearSelection()
     root.controller.hide()
   }
 
@@ -161,6 +190,119 @@ Panel {
 
   function moveYear(delta) {
     moveMonth(delta * 12)
+  }
+
+  // ---- Day selection and editing. Clicking a day both selects it and, when
+  //      it came from the neighbouring month, steps the grid onto its month so
+  //      the detail block and the grid never disagree about where you are.
+  function selectDay(cell) {
+    if (!cell || !cell.key) return
+    if (cell.year !== viewYear || cell.month !== viewMonth) {
+      root.viewYear = cell.year
+      root.viewMonth = cell.month
+    }
+
+    var reopening = root.selectedKey !== String(cell.key)
+    root.selectedKey = cell.key
+    root.anniversaryYearly = true
+    Qt.callLater(function() {
+      if (root.selectedKey !== String(cell.key)) return
+      // Clicking the day that is already open only moves the keys back to
+      // its field; clearing it would throw away a half-typed entry.
+      if (reopening) {
+        todoField.text = ""
+        annivField.text = ""
+        annivYearField.text = String(cell.year)
+      }
+      todoField.forceActiveFocus()
+    })
+  }
+
+  function selectDate(key) {
+    var parts = Events.keyParts(key)
+    if (!parts) return
+    root.selectDay({ key: String(key), year: parts.year, month: parts.month, day: parts.day })
+  }
+
+  function clearSelection() {
+    root.selectedKey = ""
+    todoField.text = ""
+    annivField.text = ""
+    if (keyCatcher) keyCatcher.forceActiveFocus()
+  }
+
+  function focusTodoField() {
+    todoField.forceActiveFocus()
+    todoField.selectAll()
+  }
+
+  function focusAnniversaryField() {
+    annivField.forceActiveFocus()
+    annivField.selectAll()
+  }
+
+  function saveEvents() {
+    // Writing before the file has been read at least once would replace
+    // whatever it held with this session's empty starting point.
+    if (!root.eventsLoaded) return
+    eventsFile.setText(Events.serializeEvents(root.events))
+  }
+
+  function addTodoFromField() {
+    if (root.selectedKey === "") return
+    if (Events.eventText(todoField.text) === "") return
+    root.events = Events.addTodo(root.events, root.selectedKey, todoField.text, Events.newEventId("t"))
+    root.saveEvents()
+    todoField.text = ""
+    todoField.forceActiveFocus()
+  }
+
+  function toggleTodo(id) {
+    var todos = root.selectedEvents.todos
+    for (var i = 0; i < todos.length; i++)
+      if (todos[i].id === id) {
+        root.events = Events.setTodoDone(root.events, id, !todos[i].done)
+        root.saveEvents()
+        return
+      }
+  }
+
+  function removeTodo(id) {
+    root.events = Events.removeTodo(root.events, id)
+    root.saveEvents()
+  }
+
+  function addAnniversaryFromField() {
+    if (root.selectedKey === "") return
+    if (Events.eventText(annivField.text) === "") return
+    root.events = Events.addAnniversary(root.events, root.selectedKey, annivField.text,
+      parseInt(annivYearField.text, 10), root.anniversaryYearly, Events.newEventId("a"))
+    root.saveEvents()
+    annivField.text = ""
+    annivField.forceActiveFocus()
+  }
+
+  function removeAnniversary(id) {
+    root.events = Events.removeAnniversary(root.events, id)
+    root.saveEvents()
+  }
+
+  function anniversaryLabel(anniversary) {
+    var year = selectedDate ? selectedDate.getFullYear() : root.today.getFullYear()
+    return Events.anniversaryLabel(anniversary, year)
+  }
+
+  function dayMarkers(cell) {
+    return Events.dayMarkers(root.events, cell ? cell.key : "")
+  }
+
+  // Escape in a detail field hands the keys back to the panel but keeps what
+  // was typed: losing a half-written entry to a stray keypress is worse than
+  // leaving it in the field.
+  function handleEntryKey(event) {
+    if (event.key !== Qt.Key_Escape) return
+    keyCatcher.forceActiveFocus()
+    event.accepted = true
   }
 
   // Applied locally first so the panel redraws on the click itself; the
@@ -276,6 +418,33 @@ Panel {
     }
   }
 
+  // ---- Event storage. FileView writes files, never the directory holding
+  //      them, so make that first. A missing file is a fresh install, not an
+  //      error: it loads as an empty list and the first write creates it.
+  Process {
+    id: makeEventsDir
+    command: ["mkdir", "-p", root.eventsDir]
+    running: true
+  }
+
+  FileView {
+    id: eventsFile
+    path: root.eventsPath
+    preload: true
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      root.events = Events.parseEvents(text())
+      root.eventsLoaded = true
+    }
+    onLoadFailed: {
+      root.events = Events.emptyEvents()
+      root.eventsLoaded = true
+    }
+    onFileChanged: reload()
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -290,13 +459,15 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.editingLife
+      blocked: root.editingLife || root.entryEditing
       onMoveRequested: function(dx, dy) {
         if (dx !== 0) root.moveMonth(dx)
         if (dy !== 0) root.moveYear(dy)
       }
       onActivateRequested: root.goToToday()
-      onCloseRequested: root.close()
+      // Escape backs out one step at a time: an open day first, then the
+      // panel. Closing outright would throw away the day being looked at.
+      onCloseRequested: root.selectedKey !== "" ? root.clearSelection() : root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "[") root.moveMonth(-1)
@@ -306,6 +477,8 @@ Panel {
         else if (t === "t" || t === "T") root.goToToday()
         else if (t === "w" || t === "W") root.toggleWeekStart()
         else if (t === "l" || t === "L") root.toggleLunar()
+        else if (t === "a") root.focusTodoField()
+        else if (t === "A") root.focusAnniversaryField()
       }
 
       Flickable {
@@ -701,15 +874,63 @@ Panel {
                       // falls outside the 1900-2100 table; the cell then
                       // keeps an empty reserved line rather than a wrong one.
                       readonly property var lunar: root.lunarInfoFor(dayCell.modelData)
+                      readonly property bool selected: root.selectedKey === dayCell.modelData.key
+                      readonly property var marks: root.dayMarkers(dayCell.modelData)
 
                       width: root.cellWidth
                       height: root.cellHeight
                       radius: Style.cornerRadius
                       // Today is outlined, not filled: a lit-up block shouts
-                      // over a grid this quiet.
-                      color: "transparent"
-                      border.width: modelData.today ? Style.spacing.hairline : 0
-                      border.color: Style.normalBorderFor(root.contentForeground, Color.accent)
+                      // over a grid this quiet. The selected day is the one
+                      // filled cell, because clicking is what picks it.
+                      color: selected
+                        ? Style.selectedFillFor(root.contentForeground, Color.accent)
+                        : (dayCellMouse.containsMouse
+                          ? Style.hoverFillFor(root.contentForeground, Color.accent)
+                          : "transparent")
+                      border.width: (modelData.today || selected) ? Style.spacing.hairline : 0
+                      border.color: selected
+                        ? Style.selectedBorderFor(root.contentForeground, Color.accent)
+                        : Style.normalBorderFor(root.contentForeground, Color.accent)
+
+                      MouseArea {
+                        id: dayCellMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.selectDay(dayCell.modelData)
+                      }
+
+                      // Two small dots in the corner: an anniversary in the
+                      // accent, an open todo in the day ink. Done-only days
+                      // keep the todo dot but dim it, so the mark still says
+                      // "something is recorded here".
+                      Row {
+                        anchors.top: parent.top
+                        anchors.right: parent.right
+                        anchors.topMargin: Style.space(3)
+                        anchors.rightMargin: Style.space(4)
+                        spacing: Style.space(2)
+                        opacity: dayCell.modelData.inMonth ? 1 : 0.5
+
+                        Rectangle {
+                          visible: dayCell.marks.anniversary
+                          width: Style.space(4)
+                          height: width
+                          radius: width / 2
+                          color: Style.selectedStateColor(root.contentForeground, Color.accent)
+                        }
+
+                        Rectangle {
+                          visible: dayCell.marks.todo
+                          width: Style.space(4)
+                          height: width
+                          radius: width / 2
+                          color: dayCell.marks.openTodo
+                            ? root.contentForeground
+                            : Qt.darker(root.contentForeground, 2)
+                        }
+                      }
 
                       Column {
                         anchors.centerIn: parent
@@ -742,9 +963,9 @@ Panel {
                           maximumLineCount: 1
                           text: dayCell.lunar ? dayCell.lunar.label : ""
                           color: root.lunarColor(dayCell.lunar)
-                          opacity: dayCell.modelData.inMonth ? 1 : 0.5
                           font.family: root.lunarFontFamily
                           font.pixelSize: Style.font.caption
+                          opacity: dayCell.modelData.inMonth ? 1 : 0.5
                         }
                       }
                     }
@@ -818,6 +1039,313 @@ Panel {
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
                 onClicked: root.moveMonth(1)
+              }
+            }
+          }
+
+          // ---- The selected day's todos and anniversaries. Only here once
+          //      a day is clicked; the grid stays visible, so another day is
+          //      always one click away.
+          Item {
+            visible: root.selectedKey !== ""
+            width: parent.width
+            height: visible ? dayDetail.height : 0
+
+            Column {
+              id: dayDetail
+              anchors.horizontalCenter: parent.horizontalCenter
+              width: gridColumn.width
+              spacing: Style.space(6)
+
+              // The date itself, its lunar caption, and the way out.
+              Item {
+                width: parent.width
+                height: Math.max(dayTitle.implicitHeight, Style.space(22))
+
+                Row {
+                  anchors.left: parent.left
+                  anchors.right: dayClose.left
+                  anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(8)
+
+                  Text {
+                    id: dayTitle
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.selectedDate
+                      ? Qt.formatDate(root.selectedDate, "dddd, MMMM d")
+                      : ""
+                    color: root.contentForeground
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.selectedLunar ? root.selectedLunar.label : ""
+                    color: root.lunarColor(root.selectedLunar)
+                    font.family: root.lunarFontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                PanelActionButton {
+                  id: dayClose
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.rightMargin: -Style.space(4)
+                  iconText: "󰅖"
+                  tooltipText: "Close day"
+                  foreground: root.contentForeground
+                  fontFamily: root.contentFontFamily
+                  onClicked: root.clearSelection()
+                }
+              }
+
+              // ---- Todos. The circle toggles done; the row is the target.
+              Repeater {
+                model: root.selectedEvents.todos
+
+                Item {
+                  id: todoRow
+                  required property var modelData
+                  width: dayDetail.width
+                  height: Style.space(22)
+
+                  Rectangle {
+                    id: todoBox
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(11)
+                    height: width
+                    radius: width / 2
+                    color: todoRow.modelData.done
+                      ? Style.selectedStateColor(root.contentForeground, Color.accent)
+                      : "transparent"
+                    border.width: todoRow.modelData.done ? 0 : Style.spacing.hairline
+                    border.color: Style.hoverStateColor(root.contentForeground, Color.accent)
+                  }
+
+                  Text {
+                    anchors.left: todoBox.right
+                    anchors.leftMargin: Style.space(8)
+                    anchors.right: todoDelete.left
+                    anchors.rightMargin: Style.space(6)
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    text: todoRow.modelData.text
+                    elide: Text.ElideRight
+                    color: todoRow.modelData.done
+                      ? Qt.darker(root.contentForeground, 1.55)
+                      : root.contentForeground
+                    font.family: root.lunarFontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.strikeout: todoRow.modelData.done                  }
+
+                  PanelActionButton {
+                    id: todoDelete
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconText: "󰅖"
+                    tooltipText: "Delete todo"
+                    foreground: Qt.darker(root.contentForeground, 1.6)
+                    fontFamily: root.contentFontFamily
+                    size: Style.space(22)
+                    onClicked: root.removeTodo(todoRow.modelData.id)
+                  }
+
+                  MouseArea {
+                    anchors.left: parent.left
+                    anchors.right: todoDelete.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleTodo(todoRow.modelData.id)
+                  }
+                }
+              }
+
+              // Enter commits the todo and keeps the field focused for the
+              // next one; Escape hands the keys back to the panel.
+              Row {
+                id: todoAddRow
+                width: parent.width
+                spacing: Style.space(6)
+
+                TextField {
+                  id: todoField
+                  width: todoAddRow.width - todoAddButton.width - todoAddRow.spacing
+                  foreground: root.contentForeground
+                  font.family: root.lunarFontFamily
+                  placeholderText: "Add a todo…"
+                  Keys.onPressed: function(event) { root.handleEntryKey(event) }
+                  onAccepted: root.addTodoFromField()
+                }
+
+                PanelActionButton {
+                  id: todoAddButton
+                  anchors.verticalCenter: parent.verticalCenter
+                  size: Style.space(26)
+                  iconText: "󰐕"
+                  tooltipText: "Add todo"
+                  foreground: root.contentForeground
+                  fontFamily: root.contentFontFamily
+                  onClicked: root.addTodoFromField()
+                }
+              }
+
+              // ---- Anniversaries. "SINCE" is the year the date began; it is
+              //      what the ordinal on the right counts from. YEARLY is the
+              //      default because that is what most anniversaries are.
+              Repeater {
+                model: root.selectedEvents.anniversaries
+
+                Item {
+                  id: anniversaryRow
+                  required property var modelData
+                  width: dayDetail.width
+                  height: Style.space(22)
+
+                  Rectangle {
+                    id: anniversaryMark
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(6)
+                    height: width
+                    rotation: 45
+                    color: Style.selectedStateColor(root.contentForeground, Color.accent)
+                  }
+
+                  Text {
+                    anchors.left: anniversaryMark.right
+                    anchors.leftMargin: Style.space(9)
+                    anchors.right: anniversaryMeta.left
+                    anchors.rightMargin: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    text: anniversaryRow.modelData.text
+                    elide: Text.ElideRight
+                    color: root.contentForeground
+                    font.family: root.lunarFontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  Text {
+                    id: anniversaryMeta
+                    anchors.right: anniversaryDelete.left
+                    anchors.rightMargin: Style.space(6)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.anniversaryLabel(anniversaryRow.modelData)
+                    color: Qt.darker(root.contentForeground, 1.7)
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.caption
+                    font.letterSpacing: 1
+                  }
+
+                  PanelActionButton {
+                    id: anniversaryDelete
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconText: "󰅖"
+                    tooltipText: "Delete anniversary"
+                    foreground: Qt.darker(root.contentForeground, 1.6)
+                    fontFamily: root.contentFontFamily
+                    size: Style.space(22)
+                    onClicked: root.removeAnniversary(anniversaryRow.modelData.id)
+                  }
+                }
+              }
+
+              Row {
+                id: anniversaryAddRow
+                width: parent.width
+                spacing: Style.space(6)
+
+                TextField {
+                  id: annivField
+                  width: anniversaryAddRow.width - sinceLabel.width - annivYearField.width
+                    - yearlyChip.width - anniversaryAddButton.width - anniversaryAddRow.spacing * 4
+                  foreground: root.contentForeground
+                  font.family: root.lunarFontFamily
+                  placeholderText: "Add an anniversary…"
+                  Keys.onPressed: function(event) { root.handleEntryKey(event) }
+                  onAccepted: root.addAnniversaryFromField()
+                }
+
+                Text {
+                  id: sinceLabel
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "SINCE"
+                  color: Qt.darker(root.contentForeground, 1.7)
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 1
+                }
+
+                TextField {
+                  id: annivYearField
+                  width: Style.space(48)
+                  anchors.verticalCenter: parent.verticalCenter
+                  foreground: root.contentForeground
+                  font.family: root.contentFontFamily
+                  inputMethodHints: Qt.ImhDigitsOnly
+                  placeholderText: "year"
+                  Keys.onPressed: function(event) { root.handleEntryKey(event) }
+                  onAccepted: root.addAnniversaryFromField()
+                }
+
+                Rectangle {
+                  id: yearlyChip
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(58)
+                  height: Style.space(24)
+                  radius: Style.cornerRadius
+                  color: yearlyChipMouse.containsMouse
+                    ? Style.hoverFillFor(root.contentForeground, Color.accent)
+                    : (root.anniversaryYearly
+                      ? Style.selectedFillFor(root.contentForeground, Color.accent)
+                      : "transparent")
+                  border.width: root.anniversaryYearly ? Style.spacing.hairline : 0
+                  border.color: Style.selectedBorderFor(root.contentForeground, Color.accent)
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: root.anniversaryYearly ? "YEARLY" : "ONCE"
+                    color: root.anniversaryYearly
+                      ? Style.selectedStateColor(root.contentForeground, Color.accent)
+                      : Qt.darker(root.contentForeground, 1.7)
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.caption
+                    font.letterSpacing: 1
+                  }
+
+                  MouseArea {
+                    id: yearlyChipMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.anniversaryYearly = !root.anniversaryYearly
+                  }
+
+                  PanelToolTip {
+                    visible: yearlyChipMouse.containsMouse
+                    text: root.anniversaryYearly ? "Repeats every year" : "This date only"
+                    fontFamily: root.contentFontFamily
+                  }
+                }
+
+                PanelActionButton {
+                  id: anniversaryAddButton
+                  anchors.verticalCenter: parent.verticalCenter
+                  size: Style.space(26)
+                  iconText: "󰐕"
+                  tooltipText: "Add anniversary"
+                  foreground: root.contentForeground
+                  fontFamily: root.contentFontFamily
+                  onClicked: root.addAnniversaryFromField()
+                }
               }
             }
           }

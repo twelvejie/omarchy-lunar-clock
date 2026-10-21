@@ -77,6 +77,16 @@ BarWidget {
     if (panelLoader.item) panelLoader.item.toggleWeekStart()
   }
 
+  // Opens the panel on a given day from outside (a script, a keybinding);
+  // the click on a day cell takes the same path.
+  function selectDate(key) {
+    if (panelLoader.item) panelLoader.item.selectDate(key)
+  }
+
+  function clearSelection() {
+    if (panelLoader.item) panelLoader.item.clearSelection()
+  }
+
   // The clock fills more slot than it paints a mark for, at both
   // orientations: horizontally it is a text label in a padded slot, so the
   // dot takes the label width; vertically it is a stack of icon-sized lines,
@@ -132,6 +142,8 @@ BarWidget {
     function refresh(): void { root.broadcast("refresh") }
     function cycleFormat(): void { root.cycleFormat() }
     function toggleWeekStart(): void { root.toggleWeekStart() }
+    function selectDate(key: string): void { root.selectDate(key) }
+    function clearSelection(): void { root.clearSelection() }
     function open(): void { root.open() }
     function close(): void { root.close() }
     function show(): void { root.open() }
