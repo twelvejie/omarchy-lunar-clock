@@ -199,4 +199,115 @@ assertEqual(data.anniversaryLabel({ date: '2004-10-21', yearly: true }, 2026), '
 assertEqual(data.anniversaryLabel({ date: '2003-10-21', yearly: true }, 2026), '23RD', 'twenty-three years reads 23RD')
 assertEqual(data.anniversaryLabel({ date: '1925-10-21', yearly: true }, 2026), '101ST', 'one hundred and one years reads 101ST')
 assertEqual(data.anniversaryLabel({ date: '1915-10-21', yearly: true }, 2026), '111TH', 'one hundred and eleven years reads 111TH')
+// ---- Lunar anniversaries ---------------------------------------------------
+const lunar = requireFromRoot('Lunar.js')
+
+// Build the lunar side of a day the way the panel does, so these tests exercise
+// the same contract: a plain {lunarMonth, lunarDay, isLeap} or null.
+function lunarOn(y, m, d) {
+  const l = lunar.solarToLunar(y, m, d)
+  return l ? { lunarMonth: l.lunarMonth, lunarDay: l.lunarDay, isLeap: l.isLeap } : null
+}
+
+// 2026-10-22 is 农历 九月十三.
+assertDeepEqual(lunarOn(2026, 10, 22), { lunarMonth: 9, lunarDay: 13, isLeap: false }, 'the lunar date of a known day')
+
+const lunarBirthday = data.addLunarAnniversary(data.emptyEvents(), '生日', 1990, 9, 13, false, true, 'L1')
+assertEqual(lunarBirthday.anniversaries[0].calendar, 'lunar', 'a lunar anniversary is marked as lunar')
+assertEqual(lunarBirthday.anniversaries[0].year, 1990, 'a lunar anniversary keeps its start year')
+assertDeepEqual(lunarBirthday.anniversaries[0].lunar, { year: 1990, month: 9, day: 13, isLeap: false }, 'a lunar anniversary keeps its lunar date')
+
+assertEqual(data.eventText(data.addLunarAnniversary(data.emptyEvents(), '  ', 1990, 9, 13, false, true, 'L2').anniversaries[0] && ''), '', 'a blank lunar anniversary is not added')
+assertEqual(data.addLunarAnniversary(data.emptyEvents(), '生日', 1990, 13, 1, false, true, 'L3').anniversaries.length, 0, 'a lunar month past twelve is rejected')
+assertEqual(data.addLunarAnniversary(data.emptyEvents(), '生日', 1990, 9, 31, false, true, 'L4').anniversaries.length, 0, 'a lunar day past thirty is rejected')
+
+// The point of a lunar record: it follows the lunar date, so in the Gregorian
+// calendar it lands on a different day almost every year. 九月十三 in 2025 is
+// 2025-11-02, not 2025-10-22.
+const lunarDay2025 = lunar.lunarToSolar(2025, 9, 13, false)
+assertEqual(lunarDay2025.year + '-' + String(lunarDay2025.month).padStart(2, '0') + '-' + String(lunarDay2025.day).padStart(2, '0'), '2025-11-02', '九月十三 2025 lands on 2025-11-02')
+
+assertEqual(
+  data.anniversaryFallsOn(lunarBirthday.anniversaries[0], 2025, 9, 22, lunarOn(2025, 10, 22)),
+  false,
+  'a lunar anniversary does not show on its Gregorian date a year later'
+)
+assertEqual(
+  data.anniversaryFallsOn(lunarBirthday.anniversaries[0], 2025, 10, 2, lunarOn(2025, 11, 2)),
+  true,
+  'a lunar anniversary shows on the Gregorian day the lunar date falls on'
+)
+
+// A leap-month record only comes round in years with that leap month.
+const leapRecord = data.addLunarAnniversary(data.emptyEvents(), '闰月生日', 2020, 4, 1, true, true, 'L5').anniversaries[0]
+assertEqual(data.isLunarAnniversary(leapRecord), true, 'a leap record is a lunar one')
+const leapMonth2020 = lunar.lunarToSolar(2020, 4, 1, true)
+assertEqual(
+  data.anniversaryFallsOn(leapRecord, 2020, leapMonth2020.month, leapMonth2020.day, lunarOn(leapMonth2020.year, leapMonth2020.month, leapMonth2020.day)),
+  true,
+  'a leap-month anniversary falls on its day in a year that has the leap month'
+)
+assertEqual(
+  data.anniversaryFallsOn(leapRecord, 2021, 5, 12, lunarOn(2021, 5, 12)),
+  false,
+  'a leap-month anniversary does not fall on an ordinary month in a year without it'
+)
+
+// The years count from the lunar start year.
+assertEqual(data.anniversaryYears(lunarBirthday.anniversaries[0], 2026), 36, 'a lunar anniversary counts years from its lunar start')
+assertEqual(data.anniversaryLabel(lunarBirthday.anniversaries[0], 2026), '36TH', 'a lunar anniversary reads the same ordinal as a Gregorian one')
+
+// A one-off lunar record only shows in its own year.
+const lunarOnce = data.addLunarAnniversary(data.emptyEvents(), '一次性', 2026, 9, 13, false, false, 'L6').anniversaries[0]
+assertEqual(data.anniversaryFallsOn(lunarOnce, 2026, 10, 22, lunarOn(2026, 10, 22)), true, 'a one-off lunar anniversary falls on its day')
+assertEqual(data.anniversaryFallsOn(lunarOnce, 2027, 10, 12, lunarOn(2027, 10, 12)), false, 'a one-off lunar anniversary does not repeat')
+
+// With no lunar date available the Gregorian records still work and the lunar
+// ones just do not resolve, rather than throwing.
+const mixed = {
+  version: 1,
+  todos: [],
+  anniversaries: [
+    { id: 's1', calendar: 'solar', date: '2020-10-22', text: 'Gregorian', yearly: true },
+    lunarBirthday.anniversaries[0]
+  ]
+}
+assertEqual(data.eventsForDate(mixed, '2026-10-22', null).anniversaries.length, 1, 'without a lunar date only the Gregorian record resolves')
+assertEqual(data.eventsForDate(mixed, '2026-10-22', lunarOn(2026, 10, 22)).anniversaries.length, 2, 'with a lunar date both records resolve')
+
+// Round trip through the file: a lunar record survives serialisation.
+const lunarRoundTrip = data.parseEvents(data.serializeEvents(lunarBirthday))
+assertDeepEqual(lunarRoundTrip.anniversaries[0].lunar, { year: 1990, month: 9, day: 13, isLeap: false }, 'a lunar record survives the file')
+assertEqual(lunarRoundTrip.anniversaries[0].calendar, 'lunar', 'the calendar field survives the file')
+
+// A hand-edited record with a broken lunar block is dropped, not crashed on.
+assertEqual(
+  data.parseEvents(JSON.stringify({ version: 1, todos: [], anniversaries: [{ calendar: 'lunar', lunar: { month: 13, day: 1 }, text: 'bad' }] })).anniversaries.length,
+  0,
+  'a lunar record with a bad month is dropped'
+)
+
+// Gregorian records written before lunar support have no calendar field and
+// must keep working exactly as they did.
+const legacy = data.parseEvents(JSON.stringify({ version: 1, todos: [], anniversaries: [{ id: 'x', date: '2020-10-22', text: 'old', yearly: true }] }))
+assertEqual(legacy.anniversaries[0].calendar, 'solar', 'an old record reads as a Gregorian one')
+assertEqual(data.anniversaryFallsOn(legacy.anniversaries[0], 2026, 9, 22, null), true, 'an old record still matches its day')
+
+// ---- Typed dates -----------------------------------------------------------
+// keyParts validates the stored format and is deliberately strict; the fields
+// a person types into are not, so a missing zero must not be an error.
+assertDeepEqual(data.parseDateInput('2026-01-05'), { year: 2026, month: 0, day: 5 }, 'a padded typed date parses')
+assertDeepEqual(data.parseDateInput('2026-1-5'), { year: 2026, month: 0, day: 5 }, 'an unpadded typed date parses too')
+assertDeepEqual(data.parseDateInput('2026/1/5'), { year: 2026, month: 0, day: 5 }, 'slashes separate a typed date')
+assertDeepEqual(data.parseDateInput('10-24', 2026), { year: 2026, month: 9, day: 24 }, 'a typed month and day borrow the shown year')
+assertEqual(data.parseDateInput('2026-02-30'), null, 'February 30 is rejected rather than rolled into March')
+assertEqual(data.parseDateInput('2026-02-29'), null, 'a leap day in a common year is rejected')
+assertDeepEqual(data.parseDateInput('2024-02-29'), { year: 2024, month: 1, day: 29 }, 'a real leap day parses to the right day')
+assertEqual(data.parseDateInput('2026-13-01'), null, 'a thirteenth month is rejected')
+assertEqual(data.parseDateInput('nonsense'), null, 'a typed word is not a date')
+assertEqual(data.parseDateInput(''), null, 'an empty field is not a date')
+
+// keyParts itself must stay strict: the file format is not the input format.
+assertEqual(data.keyParts('2026-1-5'), null, 'keyParts still rejects an unpadded stored key')
+
 JS

@@ -181,6 +181,48 @@ function solarToLunar(year, month, day) {
   }
 }
 
+// Lunar date -> Gregorian date, the inverse of solarToLunar. Months count from
+// one and `isLeap` selects the 闰 month; asking for a leap month the year does
+// not have, or a day past the month's length, returns null rather than
+// silently rounding to a nearby date. The result is {year, month, day} with
+// month one-based, the same convention as the rest of this file.
+function lunarToSolar(lunarYear, lunarMonth, lunarDay, isLeap) {
+  if (lunarYear < LUNAR_MIN_YEAR || lunarYear > LUNAR_MAX_YEAR) return null
+  if (lunarMonth < 1 || lunarMonth > 12) return null
+
+  var leap = leapMonth(lunarYear)
+  if (isLeap && leap !== lunarMonth) return null
+
+  var dayLength = isLeap ? leapMonthDays(lunarYear) : lunarMonthDays(lunarYear, lunarMonth)
+  if (lunarDay < 1 || lunarDay > dayLength) return null
+
+  // Walk the year's months in the same order solarToLunar does, so the two
+  // conversions cannot drift apart: each ordinary month, with its leap twin
+  // slotted in straight after it.
+  var offset = lunarDay - 1
+  for (var i = 1; i < lunarMonth; i++) {
+    offset += lunarMonthDays(lunarYear, i)
+    if (leap === i) offset += leapMonthDays(lunarYear)
+  }
+  if (isLeap) offset += lunarMonthDays(lunarYear, lunarMonth)
+
+  // Prefix the whole lunar year, which is what the table is indexed by.
+  for (var y = LUNAR_BASE_YEAR; y < lunarYear; y++) offset += lunarYearDays(y)
+
+  var date = utcMsToBeijingYMD(LUNAR_BASE_MS + offset * MS_PER_DAY)
+  if (date.year > LUNAR_MAX_YEAR) return null
+  return date
+}
+
+// A lunar month and day without the year, the way birthdays are remembered:
+// "every 八月十六" rather than a Gregorian date that moves each year. The
+// name is what a row shows, e.g. 闰四月 or 八月十六.
+function lunarMonthDayName(lunarMonth, lunarDay, isLeap) {
+  if (lunarMonth < 1 || lunarMonth > 12 || lunarDay < 1 || lunarDay > 30) return ""
+  var month = (isLeap ? LEAP_WORD : "") + MONTH_NAMES[lunarMonth - 1] + MONTH_WORD
+  return month + DAY_NAMES[lunarDay - 1]
+}
+
 // Index into SOLAR_TERM_NAMES for this Gregorian day, or null. The term year
 // is the Gregorian year even when the lunar year is the one before, so this
 // must always be called with the Gregorian date.
@@ -265,6 +307,8 @@ function boolValue(value, fallback) {
 if (typeof module !== "undefined") {
   module.exports = {
     solarToLunar: solarToLunar,
+    lunarToSolar: lunarToSolar,
+    lunarMonthDayName: lunarMonthDayName,
     solarTermIndex: solarTermIndex,
     dayInfo: dayInfo,
     dayLabel: dayLabel,

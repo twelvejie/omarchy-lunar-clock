@@ -75,17 +75,58 @@ Panel {
   property var events: Events.emptyEvents()
   property bool eventsLoaded: false
   property string selectedKey: ""
+  // The parts of the selected day, kept alongside the key so the composer and
+  // the row labels do not re-parse it every time.
+  property var selectedCell: null
   property bool anniversaryYearly: true
 
+  // ---- The anniversary composer. A new record can be anchored on either
+  //      calendar, and on any date rather than only the clicked day: a
+  //      birthday or a wedding usually happened long ago and somewhere else
+  //      in the year. `annivCalendar` picks which set of fields is live; the
+  //      other keeps whatever was typed, so toggling back and forth does not
+  //      throw away half an entry.
+  property bool annivLunar: false
+  property bool annivLeap: false
+  // Typed dates rather than stored ones, so yyyy-M-d is accepted as readily as
+  // yyyy-MM-dd. The Gregorian draft carries its own year; the lunar one needs
+  // a separate SINCE year because a lunar date has no Gregorian year of its own.
+  readonly property var annivSolarDraft: Events.parseDateInput(annivDateField.text, viewYear)
+  readonly property var annivLunarDraft: {
+    var month = parseInt(annivLunarMonthField.text, 10)
+    var day = parseInt(annivLunarDayField.text, 10)
+    if (!isFinite(month) || !isFinite(day) || month < 1 || month > 12 || day < 1 || day > 30) return null
+    return { month: month, day: day }
+  }
+  // The Gregorian day a lunar draft lands on, for the confirmation under the
+  // fields. Null while the draft is incomplete or names a leap month the year
+  // being previewed does not have.
+  readonly property var annivLunarPreview: {
+    if (!annivLunar || !annivLunarDraft) return null
+    var year = parseInt(annivLunarYearField.text, 10)
+    if (!isFinite(year) || year < 1900 || year > 2100) return null
+    return Lunar.lunarToSolar(year, annivLunarDraft.month, annivLunarDraft.day, annivLeap)
+  }
+
   readonly property var selectedDate: Events.dateFromKey(selectedKey)
-  readonly property var selectedEvents: Events.eventsForDate(events, selectedKey)
   readonly property var selectedLunar: {
     if (!selectedDate || !showLunar) return null
     return Lunar.dayInfo(selectedDate.getFullYear(), selectedDate.getMonth() + 1, selectedDate.getDate())
   }
+  // The bare lunar date of the selected day, in the shape Events.js matches
+  // against. Kept separate from selectedLunar above so yearly lunar records
+  // still resolve when the captions are switched off.
+  readonly property var selectedLunarDate: {
+    if (!selectedDate) return null
+    var info = Lunar.solarToLunar(selectedDate.getFullYear(), selectedDate.getMonth() + 1, selectedDate.getDate())
+    return info ? { lunarMonth: info.lunarMonth, lunarDay: info.lunarDay, isLeap: info.isLeap } : null
+  }
+  readonly property var selectedEvents: Events.eventsForDate(events, selectedKey, selectedLunarDate)
   // True while a text field in the day detail owns the keys, so the panel's
   // shortcut handler steps aside the same way it does for the life fields.
-  readonly property bool entryEditing: todoField.activeFocus || annivField.activeFocus || annivYearField.activeFocus
+  readonly property bool entryEditing: todoField.activeFocus || annivField.activeFocus
+    || annivDateField.activeFocus
+    || annivLunarMonthField.activeFocus || annivLunarDayField.activeFocus || annivLunarYearField.activeFocus
 
   // Unset falls through to the locale's own first day, so a fresh install
   // starts out matching the rest of the desktop rather than a hardcoded
@@ -204,6 +245,7 @@ Panel {
 
     var reopening = root.selectedKey !== String(cell.key)
     root.selectedKey = cell.key
+    root.selectedCell = { year: cell.year, month: cell.month, day: cell.day }
     root.anniversaryYearly = true
     Qt.callLater(function() {
       if (root.selectedKey !== String(cell.key)) return
@@ -212,10 +254,28 @@ Panel {
       if (reopening) {
         todoField.text = ""
         annivField.text = ""
-        annivYearField.text = String(cell.year)
+        root.resetAnniversaryDraft(cell.year)
       }
       todoField.forceActiveFocus()
     })
+  }
+
+  // The composer starts out on the clicked day on whichever calendar is
+  // active, so pressing Enter straight away records that day — but every field
+  // is editable, which is the point: an anniversary usually happened years
+  // ago and on a date of its own.
+  function resetAnniversaryDraft(year) {
+    var parts = root.selectedCell
+    var month = parts ? parts.month : viewMonth
+    var day = parts ? parts.day : 1
+    annivLunarYearField.text = String(year)
+    annivDateField.text = Events.eventDateKey(year, month, day)
+    var info = Lunar.solarToLunar(year, month + 1, day)
+    annivLunarMonthField.text = info ? String(info.lunarMonth) : "1"
+    annivLunarDayField.text = info ? String(info.lunarDay) : "1"
+    root.annivLeap = info ? info.isLeap : false
+    annivSolarError.text = ""
+    annivLunarError.text = ""
   }
 
   function selectDate(key) {
@@ -226,6 +286,7 @@ Panel {
 
   function clearSelection() {
     root.selectedKey = ""
+    root.selectedCell = null
     todoField.text = ""
     annivField.text = ""
     if (keyCatcher) keyCatcher.forceActiveFocus()
@@ -272,11 +333,48 @@ Panel {
     root.saveEvents()
   }
 
+  // Both calendars validate before touching the store. The fields are typed by
+  // hand, so the failure has to be visible: annivSolarError / annivLunarError
+  // carry a short reason rather than the click doing nothing.
   function addAnniversaryFromField() {
     if (root.selectedKey === "") return
     if (Events.eventText(annivField.text) === "") return
-    root.events = Events.addAnniversary(root.events, root.selectedKey, annivField.text,
-      parseInt(annivYearField.text, 10), root.anniversaryYearly, Events.newEventId("a"))
+
+    if (root.annivLunar) {
+      var year = parseInt(annivLunarYearField.text, 10)
+      if (!isFinite(year) || year < 1900 || year > 2100) {
+        annivLunarError.text = "Year must be 1900-2100"
+        return
+      }
+      if (!root.annivLunarDraft) {
+        annivLunarError.text = "Month 1-12, day 1-30"
+        return
+      }
+      // Preview the exact day first: a leap month the year does not have, or
+      // a 三十 in a 29-day month, would otherwise be stored as a record that
+      // never resolves.
+      if (!root.annivLunarPreview) {
+        annivLunarError.text = String(year) + " has no such lunar day"
+        return
+      }
+      annivLunarError.text = ""
+      root.events = Events.addLunarAnniversary(root.events, annivField.text, year,
+        root.annivLunarDraft.month, root.annivLunarDraft.day, root.annivLeap,
+        root.anniversaryYearly, Events.newEventId("a"))
+    } else {
+      // The Gregorian field carries the whole date, year included, so the
+      // record starts in the year that was actually typed rather than in the
+      // year the grid happens to be showing.
+      if (!root.annivSolarDraft) {
+        annivSolarError.text = "Date must be yyyy-MM-dd"
+        return
+      }
+      annivSolarError.text = ""
+      var key = Events.eventDateKey(root.annivSolarDraft.year, root.annivSolarDraft.month, root.annivSolarDraft.day)
+      root.events = Events.addAnniversary(root.events, key, annivField.text, root.annivSolarDraft.year,
+        root.anniversaryYearly, Events.newEventId("a"))
+    }
+
     root.saveEvents()
     annivField.text = ""
     annivField.forceActiveFocus()
@@ -292,8 +390,35 @@ Panel {
     return Events.anniversaryLabel(anniversary, year)
   }
 
+  // What a row shows on its right: the date the anniversary is kept on, in the
+  // calendar it was written in. Without it a row says only "11TH" and there is
+  // no way to tell a lunar birthday from a Gregorian one.
+  function anniversaryDateName(anniversary) {
+    if (!anniversary) return ""
+    if (Events.isLunarAnniversary(anniversary)) {
+      var l = anniversary.lunar
+      if (!l) return ""
+      return Lunar.lunarMonthDayName(l.month, l.day, l.isLeap)
+    }
+    var parts = Events.keyParts(anniversary.date)
+    if (!parts) return ""
+    return pad2(parts.month + 1) + "-" + pad2(parts.day)
+  }
+
+  function pad2(value) {
+    var n = Number(value)
+    return (n < 10 ? "0" : "") + n
+  }
+
   function dayMarkers(cell) {
-    return Events.dayMarkers(root.events, cell ? cell.key : "")
+    if (!cell) return { todo: false, openTodo: false, anniversary: false }
+    return Events.dayMarkers(root.events, cell.key, lunarForCell(cell))
+  }
+
+  function lunarForCell(cell) {
+    if (!cell) return null
+    var info = Lunar.solarToLunar(cell.year, cell.month + 1, cell.day)
+    return info ? { lunarMonth: info.lunarMonth, lunarDay: info.lunarDay, isLeap: info.isLeap } : null
   }
 
   // Escape in a detail field hands the keys back to the panel but keeps what
@@ -1232,6 +1357,22 @@ Panel {
                     font.pixelSize: Style.font.bodySmall
                   }
 
+                  // The date the record is kept on, in the calendar it was
+                  // written in, then the ordinal. Without the date a row reads
+                  // "11TH" with no way to tell a lunar birthday from a
+                  // Gregorian one, or which day either falls on.
+                  Text {
+                    id: anniversaryDateText
+                    anchors.right: anniversaryMeta.left
+                    anchors.rightMargin: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    text: root.anniversaryDateName(anniversaryRow.modelData)
+                    color: Qt.darker(root.contentForeground, 1.5)
+                    font.family: root.lunarFontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
                   Text {
                     id: anniversaryMeta
                     anchors.right: anniversaryDelete.left
@@ -1258,6 +1399,10 @@ Panel {
                 }
               }
 
+              // ---- The composer. Two rows on purpose: the first is what the
+              //      occasion is, the second is when — a date of its own, on
+              //      either calendar, rather than the day that happens to be
+              //      open in the grid.
               Row {
                 id: anniversaryAddRow
                 width: parent.width
@@ -1265,33 +1410,90 @@ Panel {
 
                 TextField {
                   id: annivField
-                  width: anniversaryAddRow.width - sinceLabel.width - annivYearField.width
-                    - yearlyChip.width - anniversaryAddButton.width - anniversaryAddRow.spacing * 4
+                  width: anniversaryAddRow.width - annivCalendarChip.width - anniversaryAddButton.width
+                    - anniversaryAddRow.spacing * 2
                   foreground: root.contentForeground
                   font.family: root.lunarFontFamily
-                  placeholderText: "Add an anniversary…"
+                  placeholderText: "Add a birthday or anniversary…"
                   Keys.onPressed: function(event) { root.handleEntryKey(event) }
                   onAccepted: root.addAnniversaryFromField()
                 }
 
-                Text {
-                  id: sinceLabel
+                // Which calendar the date below is written in. A birthday
+                // kept on the lunar one stays put on the lunar calendar and
+                // moves across the Gregorian one; the chip says which.
+                Rectangle {
+                  id: annivCalendarChip
                   anchors.verticalCenter: parent.verticalCenter
-                  text: "SINCE"
-                  color: Qt.darker(root.contentForeground, 1.7)
-                  font.family: root.contentFontFamily
-                  font.pixelSize: Style.font.caption
-                  font.letterSpacing: 1
+                  width: Style.space(66)
+                  height: Style.space(24)
+                  radius: Style.cornerRadius
+                  color: annivCalendarChipMouse.containsMouse
+                    ? Style.hoverFillFor(root.contentForeground, Color.accent)
+                    : (root.annivLunar
+                      ? Style.selectedFillFor(root.contentForeground, Color.accent)
+                      : "transparent")
+                  border.width: root.annivLunar ? Style.spacing.hairline : Style.spacing.hairline
+                  border.color: root.annivLunar
+                    ? Style.selectedBorderFor(root.contentForeground, Color.accent)
+                    : Style.hoverBorderFor(root.contentForeground, Color.accent)
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: root.annivLunar ? "LUNAR" : "SOLAR"
+                    color: root.annivLunar
+                      ? Style.selectedStateColor(root.contentForeground, Color.accent)
+                      : Qt.darker(root.contentForeground, 1.7)
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.caption
+                    font.letterSpacing: 1
+                  }
+
+                  MouseArea {
+                    id: annivCalendarChipMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.annivLunar = !root.annivLunar
+                      annivSolarError.text = ""
+                      annivLunarError.text = ""
+                    }
+                  }
+
+                  PanelToolTip {
+                    visible: annivCalendarChipMouse.containsMouse
+                    text: root.annivLunar ? "Kept on the lunar calendar" : "Kept on the Gregorian calendar"
+                    fontFamily: root.contentFontFamily
+                  }
                 }
 
+                PanelActionButton {
+                  id: anniversaryAddButton
+                  anchors.verticalCenter: parent.verticalCenter
+                  size: Style.space(26)
+                  iconText: "󰐕"
+                  tooltipText: "Add anniversary"
+                  foreground: root.contentForeground
+                  fontFamily: root.contentFontFamily
+                  onClicked: root.addAnniversaryFromField()
+                }
+              }
+
+              // ---- Gregorian date, one field typed as yyyy-MM-dd.
+              Row {
+                id: solarDateRow
+                width: parent.width
+                spacing: Style.space(6)
+                visible: root.selectedKey !== "" && !root.annivLunar
+
                 TextField {
-                  id: annivYearField
-                  width: Style.space(48)
+                  id: annivDateField
+                  width: Style.space(104)
                   anchors.verticalCenter: parent.verticalCenter
                   foreground: root.contentForeground
                   font.family: root.contentFontFamily
-                  inputMethodHints: Qt.ImhDigitsOnly
-                  placeholderText: "year"
+                  placeholderText: "yyyy-MM-dd"
                   Keys.onPressed: function(event) { root.handleEntryKey(event) }
                   onAccepted: root.addAnniversaryFromField()
                 }
@@ -1307,8 +1509,10 @@ Panel {
                     : (root.anniversaryYearly
                       ? Style.selectedFillFor(root.contentForeground, Color.accent)
                       : "transparent")
-                  border.width: root.anniversaryYearly ? Style.spacing.hairline : 0
-                  border.color: Style.selectedBorderFor(root.contentForeground, Color.accent)
+                  border.width: Style.spacing.hairline
+                  border.color: root.anniversaryYearly
+                    ? Style.selectedBorderFor(root.contentForeground, Color.accent)
+                    : Style.hoverBorderFor(root.contentForeground, Color.accent)
 
                   Text {
                     anchors.centerIn: parent
@@ -1336,15 +1540,131 @@ Panel {
                   }
                 }
 
-                PanelActionButton {
-                  id: anniversaryAddButton
+                Text {
+                  id: annivSolarError
                   anchors.verticalCenter: parent.verticalCenter
-                  size: Style.space(26)
-                  iconText: "󰐕"
-                  tooltipText: "Add anniversary"
+                  text: ""
+                  color: Style.selectedStateColor(root.contentForeground, Color.accent)
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              // ---- Lunar date, as the month and day a calendar prints: month
+              //      1-12, day 1-30, and a 闰 toggle for a leap month. The
+              //      Gregorian day it lands on is previewed to the right, since
+              //      that is the only way to tell whether the pair exists in
+              //      that year.
+              Row {
+                id: lunarDateRow
+                width: parent.width
+                spacing: Style.space(6)
+                visible: root.selectedKey !== "" && root.annivLunar
+
+                TextField {
+                  id: annivLunarMonthField
+                  width: Style.space(46)
+                  anchors.verticalCenter: parent.verticalCenter
                   foreground: root.contentForeground
-                  fontFamily: root.contentFontFamily
-                  onClicked: root.addAnniversaryFromField()
+                  font.family: root.contentFontFamily
+                  inputMethodHints: Qt.ImhDigitsOnly
+                  placeholderText: "month"
+                  Keys.onPressed: function(event) { root.handleEntryKey(event) }
+                  onAccepted: root.addAnniversaryFromField()
+                }
+
+                TextField {
+                  id: annivLunarDayField
+                  width: Style.space(40)
+                  anchors.verticalCenter: parent.verticalCenter
+                  foreground: root.contentForeground
+                  font.family: root.contentFontFamily
+                  inputMethodHints: Qt.ImhDigitsOnly
+                  placeholderText: "day"
+                  Keys.onPressed: function(event) { root.handleEntryKey(event) }
+                  onAccepted: root.addAnniversaryFromField()
+                }
+
+                Rectangle {
+                  id: leapChip
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(44)
+                  height: Style.space(24)
+                  radius: Style.cornerRadius
+                  color: leapChipMouse.containsMouse
+                    ? Style.hoverFillFor(root.contentForeground, Color.accent)
+                    : (root.annivLeap
+                      ? Style.selectedFillFor(root.contentForeground, Color.accent)
+                      : "transparent")
+                  border.width: Style.spacing.hairline
+                  border.color: root.annivLeap
+                    ? Style.selectedBorderFor(root.contentForeground, Color.accent)
+                    : Style.hoverBorderFor(root.contentForeground, Color.accent)
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: "闰"
+                    color: root.annivLeap
+                      ? Style.selectedStateColor(root.contentForeground, Color.accent)
+                      : Qt.darker(root.contentForeground, 1.7)
+                    font.family: root.lunarFontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  MouseArea {
+                    id: leapChipMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.annivLeap = !root.annivLeap
+                  }
+
+                  PanelToolTip {
+                    visible: leapChipMouse.containsMouse
+                    text: root.annivLeap ? "A leap month" : "An ordinary month"
+                    fontFamily: root.contentFontFamily
+                  }
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "SINCE"
+                  color: Qt.darker(root.contentForeground, 1.7)
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: 1
+                }
+
+                TextField {
+                  id: annivLunarYearField
+                  width: Style.space(52)
+                  anchors.verticalCenter: parent.verticalCenter
+                  foreground: root.contentForeground
+                  font.family: root.contentFontFamily
+                  inputMethodHints: Qt.ImhDigitsOnly
+                  placeholderText: "year"
+                  Keys.onPressed: function(event) { root.handleEntryKey(event) }
+                  onAccepted: root.addAnniversaryFromField()
+                }
+
+                Text {
+                  id: annivLunarPreviewLabel
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.annivLunarPreview
+                    ? "→ " + pad2(root.annivLunarPreview.month) + "-" + pad2(root.annivLunarPreview.day)
+                    : ""
+                  color: Qt.darker(root.contentForeground, 1.5)
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  id: annivLunarError
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: ""
+                  color: Style.selectedStateColor(root.contentForeground, Color.accent)
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
                 }
               }
             }

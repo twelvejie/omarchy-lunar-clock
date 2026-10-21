@@ -3,7 +3,7 @@
 An Omarchy bar widget that adds the **Chinese lunar calendar** (农历) to the
 built-in clock: the lunar date, the traditional festivals, and the twenty-four
 solar terms (二十四节气) under every day in the calendar popup — and a day
-editor for **todos and anniversaries**.
+editor for **todos, birthdays and anniversaries**, on either calendar.
 
 ![The calendar popup showing lunar dates, festivals, and solar terms](preview.png)
 
@@ -32,10 +32,35 @@ Click any day and the popup opens an editor for it under the month rail:
 
 - **Todos** belong to that one day. Type and press <kbd>Enter</kbd> (or
   <kbd>+</kbd>); click a row to tick it off, <kbd>×</kbd> removes it.
-- **Anniversaries** repeat on that month and day every year. `SINCE` is the year
-  the date began — it is what the label on the right counts from, `1ST`, `2ND`,
-  … `ONCE` for a one-off (toggle `YEARLY` to make one). Leave `SINCE` as it is
-  and the anniversary starts at the clicked day's own year.
+- **Birthdays and anniversaries** repeat every year on a date you type, which
+  need not be the day you clicked — most of them are years old and somewhere
+  else in the calendar. Two rows: the first is the occasion and its calendar,
+  the second is the date.
+
+### Entering a date
+
+The **SOLAR / LUNAR** chip picks which calendar the date is written in.
+
+| Calendar | Fields | Notes |
+|---|---|---|
+| `SOLAR` | one date field | `2015-03-15`, or `2015-3-15`; the year is part of it |
+| `LUNAR` | month, day, 闰, `SINCE` year | e.g. `8` `16` → 八月十六 |
+
+A lunar date has no Gregorian year of its own, so the lunar row asks for a
+`SINCE` year separately: that is the lunar year the occasion began in, and it is
+what the ordinal counts from. While you type, `→ 09-26` appears on the right —
+the Gregorian day that lunar date lands on in the `SINCE` year — because that is
+the only way to see whether the pair exists at all. A month the year does not
+have as a leap month, or a 三十 in a 29-day month, is refused rather than stored
+as a record that would never come round.
+
+**A lunar anniversary moves across the Gregorian calendar.** 八月十六 was
+2026-09-26 and 2025-10-07; the record follows the lunar date, not the day it was
+entered on. That is the point of keeping a birthday on the lunar calendar.
+
+`YEARLY` makes the record repeat; toggle it to `ONCE` for a one-off. Each row
+shows the date it is kept on in the calendar it was written in, then the
+ordinal: `八月十六 36TH`, `10-22 11TH`, `ONCE`.
 
 A day carrying either kind shows a dot in its cell — filled while a todo is
 still open, hollow once they are all done — and a second dot for an
@@ -54,6 +79,17 @@ over. A record that cannot be rendered (a bad date, empty text) is dropped on
 load rather than breaking the rest of the file.
 
 Nothing here syncs anywhere — it stays on this machine.
+
+A lunar record stores its lunar date as the source of truth:
+
+```json
+{ "calendar": "lunar", "year": 1990,
+  "lunar": { "year": 1990, "month": 8, "day": 16, "isLeap": false },
+  "text": "Lunar birthday", "yearly": true }
+```
+
+Editing those numbers moves the record; editing `year` moves the year the
+ordinal counts from.
 
 ## Requirements
 
