@@ -124,6 +124,18 @@ function normalizeEvents(value) {
     if (record) out.anniversaries.push(record)
   }
 
+  // Reminder stamps belong to the file rather than to the service that wrote
+  // them: they are what stops a restart from notifying a second time, so they
+  // have to survive a round trip through here. Kept as-is apart from dropping
+  // entries that are not "yyyy-MM-dd".
+  var reminded = value.reminded
+  if (reminded && typeof reminded === "object" && !Array.isArray(reminded)) {
+    var stamps = {}
+    for (var id in reminded)
+      if (keyParts(reminded[id])) stamps[id] = String(reminded[id])
+    if (Object.keys(stamps).length > 0) out.reminded = stamps
+  }
+
   return out
 }
 

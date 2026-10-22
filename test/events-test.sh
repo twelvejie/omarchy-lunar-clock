@@ -310,4 +310,34 @@ assertEqual(data.parseDateInput(''), null, 'an empty field is not a date')
 // keyParts itself must stay strict: the file format is not the input format.
 assertEqual(data.keyParts('2026-1-5'), null, 'keyParts still rejects an unpadded stored key')
 
+// ---- Reminder stamps -------------------------------------------------------
+// These live in the same file as the events but belong to the reminders
+// service. They must survive a round trip, because they are what stops a shell
+// restart from notifying the same anniversary a second time.
+const stamped = data.parseEvents(JSON.stringify({
+  version: 1, todos: [], anniversaries: [],
+  reminded: { a1: '2026-10-22' }
+}))
+assertDeepEqual(stamped.reminded, { a1: '2026-10-22' }, 'a reminder stamp survives the file')
+assertEqual(
+  data.parseEvents(data.serializeEvents(stamped)).reminded.a1,
+  '2026-10-22',
+  'a reminder stamp survives serialisation'
+)
+assertEqual(
+  data.parseEvents(JSON.stringify({ version: 1, todos: [], anniversaries: [], reminded: { a1: 'nope' } })).reminded,
+  undefined,
+  'a malformed stamp is dropped'
+)
+assertEqual(
+  data.parseEvents(JSON.stringify({ version: 1, todos: [], anniversaries: [] })).reminded,
+  undefined,
+  'a file with no stamps has none'
+)
+assertEqual(
+  data.parseEvents(JSON.stringify({ version: 1, todos: [], anniversaries: [], reminded: [] })).reminded,
+  undefined,
+  'a list is not a stamp map'
+)
+
 JS

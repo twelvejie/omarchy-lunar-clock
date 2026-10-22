@@ -2,16 +2,18 @@
   "schemaVersion": 1,
   "id": "io.github.twelvejie.lunar-clock",
   "name": "Chinese Lunar Clock",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "twelvejie",
   "license": "MIT",
   "homepage": "https://github.com/twelvejie/omarchy-lunar-clock",
-  "description": "Date/time bar label with a calendar popup that adds the Chinese lunar date, traditional festivals, and the 24 solar terms, and keeps todos plus Gregorian or lunar birthdays and anniversaries.",
+  "description": "Date/time bar label with a calendar popup that adds the Chinese lunar date, traditional festivals, and the 24 solar terms, keeps todos plus Gregorian or lunar birthdays and anniversaries, and sends a daily notification in the week before each one.",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "service"
   ],
   "entryPoints": {
-    "barWidget": "BarWidget.qml"
+    "barWidget": "BarWidget.qml",
+    "service": "Service.qml"
   },
   "barWidget": {
     "displayName": "Chinese Lunar Clock",

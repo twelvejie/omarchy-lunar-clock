@@ -80,6 +80,39 @@ load rather than breaking the rest of the file.
 
 Nothing here syncs anywhere — it stays on this machine.
 
+## Reminders
+
+A birthday or anniversary gets a desktop notification **every day in the week
+before it**, including the day itself. Nothing to turn on: the widget ships a
+service plugin that the shell keeps loaded, so the reminders arrive whether or
+not the calendar popup is open.
+
+- Once a day, not once an hour. The store remembers the last day each record was
+  reminded on, so restarting the shell, waking the machine, or editing the
+  plugin cannot produce a second notification for the same day.
+- If the shell was off for the whole week, you get one reminder for today rather
+  than a week's backlog.
+- It checks hourly, so a machine that was asleep through midnight catches up on
+  wake instead of waiting for a restart.
+- A record whose date has passed rolls forward to next year rather than going
+  quiet.
+- A 29 February record simply has no occurrence in a common year; it is not
+  quietly moved to the 28th.
+
+Clicking a notification opens the calendar.
+
+### Checking it works
+
+```bash
+omarchy-shell reminders due     # what would be notified right now
+omarchy-shell reminders check   # run the real path (respects today's stamps)
+omarchy-shell reminders reset   # forget today's stamps, so check notifies again
+```
+
+Reminders only fire for a record whose date is within seven days. `due` prints
+each one with its date and how many days away it is, or `none`.
+
+
 A lunar record stores its lunar date as the source of truth:
 
 ```json
@@ -159,6 +192,7 @@ omarchy plugin remove io.github.twelvejie.lunar-clock
 ```bash
 ./test/lunar-test.sh
 ./test/events-test.sh
+./test/reminders-test.sh
 ```
 
 `lunar-test.sh` checks known festival and solar-term dates, leap months, New
@@ -171,6 +205,11 @@ has exactly one 除夕, and that no day of a leap month ever matches a festival.
 through the file format, malformed records being dropped instead of taking the
 file down, yearly versus one-off matching, immutability of the edit operations,
 and the ordinal labels.
+
+`reminders-test.sh` covers the reminder rules: the seven-day window, one
+notification per record per day, stamps pruned when a record is deleted, a
+passed date rolling forward, 29 February in a common year, and a lunar date
+resolving to the right Gregorian day.
 
 ## Credits
 
